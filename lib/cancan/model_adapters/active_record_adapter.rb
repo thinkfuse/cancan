@@ -120,7 +120,8 @@ module CanCan
           when false_sql
             behavior ? conditions : false_sql
           else
-            behavior ? "(#{conditions}) OR (#{sql})" : "not (#{conditions}) AND (#{sql})"
+            # fix nested imbrication
+            behavior ? "(#{conditions}) OR #{sql}" : "(not (#{conditions}) AND #{sql})"
           end
         end
       end
@@ -133,8 +134,74 @@ module CanCan
         sanitize_sql(['?=?', true, true])
       end
 
+      # fix MetaWhere conditions
       def sanitize_sql(conditions)
+        conditions.is_a?(Hash) ? sanitize_hash(conditions) : @model_class.send(:sanitize_sql, conditions)
+      end
+
+      def sanitize_hash(conditions, parent_table = nil)
+        sql_fragments = []
+        for k, v in conditions # going down to last hash
+          if v.is_a?(Hash)
+            sql_fragments << sanitize_hash(v, k)
+          elsif k.is_a?(MetaWhere::Column)
+            sql_fragments << sanitize_meta_where(k, v, parent_table)
+          end
+        end
+        clean_meta_where_subtree(conditions) # clean separate because ruby 1.9.2 segfault ...
+        if conditions.present?
+          sql_fragments << @model_class.send(:sanitize_sql, 
+            parent_table.nil? ? conditions : {parent_table => conditions})
+        end
+        sql_fragments.reject(&:blank?).uniq.join(' AND ')
+      end
+
+      def sanitize_meta_where(k ,v, parent_table = nil)
+        condition = k % v # MW::Column % val -> MW::Condition
+        column_name = condition.column.to_s
+        if column_name.include?('.')
+          table_name, column_name = column_name.split('.', 2)
+          table = Arel::Table.new(table_name, :engine => @model_class.arel_engine)
+        elsif parent_table.present?
+          table = Arel::Table.new(parent_table, :engine => @model_class.arel_engine)
+        else
+          table = @model_class.arel_table
+        end
+
+        unless attribute = table[column_name]
+          raise ::ActiveRecord::StatementInvalid, "No attribute named `#{column_name}` exists for table `#{table.name}`"
+        end
+
+        placeholder = Arel::Nodes::SqlLiteral.new('?')
+        conditions = [attribute.send(condition.method, placeholder).to_sql, condition.value]
         @model_class.send(:sanitize_sql, conditions)
+      end
+
+      # Removes all subtrees that contain a meta where key.
+      #
+      # Example:
+      #
+      #   { :a => 1
+      #     :b => {:c => 1},
+      #     :d => {#mw => 1},
+      #     :e => {#mw => 1, :f => 1},
+      #     #mw => {:g => 1} }
+      #
+      #   to:
+      #
+      #   { :a => 1
+      #     :b => {:c => 1},
+      #     :e => {:f => 1} }
+      #
+      def clean_meta_where_subtree(conditions)
+        for k, v in conditions
+          if k.is_a?(MetaWhere::Column)
+            conditions.delete(k)
+          elsif v.is_a?(Hash)
+            clean_meta_where_subtree(v)
+            conditions.delete(k) if v.blank?
+          end
+        end
       end
 
       # Takes two hashes and does a deep merge.
