@@ -171,8 +171,12 @@ module CanCan
           raise ::ActiveRecord::StatementInvalid, "No attribute named `#{column_name}` exists for table `#{table.name}`"
         end
 
-        placeholder = Arel::Nodes::SqlLiteral.new('?')
-        conditions = [attribute.send(condition.method, placeholder).to_sql, condition.value]
+        if condition.value.nil?
+          conditions = [attribute.send(condition.method, nil).to_sql]
+        else
+          placeholder = Arel::Nodes::SqlLiteral.new('?')
+          conditions = [attribute.send(condition.method, placeholder).to_sql, condition.value]
+        end
         @model_class.send(:sanitize_sql, conditions)
       end
 
