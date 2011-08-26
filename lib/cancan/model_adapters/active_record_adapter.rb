@@ -120,8 +120,7 @@ module CanCan
           when false_sql
             behavior ? conditions : false_sql
           else
-            # fix nested imbrication
-            behavior ? "(#{conditions}) OR #{sql}" : "(not (#{conditions}) AND #{sql})"
+            behavior ? "(#{conditions}) OR (#{sql})" : "not (#{conditions}) AND (#{sql})"
           end
         end
       end
